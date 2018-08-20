@@ -1,0 +1,584 @@
+<html>
+    <head>
+        <title>Cube Test (Instancing)</title>
+        <meta http-equiv="content-type" content="text/html; charset=ISO-8859-1">
+        
+        <script type="text/javascript" src="glMatrix-0.9.5.min.js"></script>
+        <script type="text/javascript" src="webgl-utils.js"></script>
+        
+        <script id="shader-vs" type="x-shader/x-vertex">
+            attribute vec3 aVertexPosition;
+            attribute vec2 aTextureCoord;
+            attribute vec3 aInstancePosition;
+            
+            uniform mat4 uMVMatrix;
+            uniform mat4 uPMatrix;
+            
+            varying vec2 vTextureCoord;
+            
+            void main(void) {
+                mat4 matrix = mat4(1.0, 0.0, 0.0, 0.0,
+                                   0.0, 1.0, 0.0, 0.0,
+                                   0.0, 0.0, 1.0, 0.0,
+                                   aInstancePosition.x, aInstancePosition.y, aInstancePosition.z, 1.0);
+                gl_Position = uPMatrix * uMVMatrix * matrix * vec4(aVertexPosition, 1.0);
+                vTextureCoord = aTextureCoord;
+            }
+        </script>
+        
+        <script id="shader-fs" type="x-shader/x-fragment">
+            precision mediump float;
+
+            varying vec2 vTextureCoord;
+
+            uniform sampler2D uSampler;
+
+            void main(void) {
+                gl_FragColor = texture2D(uSampler, vec2(vTextureCoord.s, vTextureCoord.t));
+            }
+        </script>
+
+
+        <script type="text/javascript">
+
+            var gl;
+            var ext;
+            function initGL(canvas) {
+                try {
+                    gl = canvas.getContext("experimental-webgl");
+                    gl.viewportWidth = canvas.width;
+                    gl.viewportHeight = canvas.height;
+                    
+                    ext = gl.getExtension('ANGLE_instanced_arrays');
+                    if (null == ext) {
+                        alert('ANGLE_instanced_arrays not supported');
+                        return;
+                    }
+                    if (null == gl.getExtension('OES_element_index_uint')) {
+                        alert('OES_element_index_uint not supported');
+                        return;
+                    }
+                    
+                } catch (e) {
+                }
+                if (!gl) {
+                    alert("Could not initialise WebGL, sorry :-(");
+                }
+            }
+
+            function getShader(gl, id) {
+                var shaderScript = document.getElementById(id);
+                if (!shaderScript) {
+                    return null;
+                }
+
+                var str = "";
+                var k = shaderScript.firstChild;
+                while (k) {
+                    if (k.nodeType == 3) {
+                        str += k.textContent;
+                    }
+                    k = k.nextSibling;
+                }
+
+                var shader;
+                if (shaderScript.type == "x-shader/x-fragment") {
+                    shader = gl.createShader(gl.FRAGMENT_SHADER);
+                } else if (shaderScript.type == "x-shader/x-vertex") {
+                    shader = gl.createShader(gl.VERTEX_SHADER);
+                } else {
+                    return null;
+                }
+
+                gl.shaderSource(shader, str);
+                gl.compileShader(shader);
+
+                if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                    alert(gl.getShaderInfoLog(shader));
+                    return null;
+                }
+
+                return shader;
+            }
+
+            var shaderProgram;
+
+            function initShaders() {
+                var fragmentShader = getShader(gl, "shader-fs");
+                var vertexShader = getShader(gl, "shader-vs");
+
+                shaderProgram = gl.createProgram();
+                gl.attachShader(shaderProgram, vertexShader);
+                gl.attachShader(shaderProgram, fragmentShader);
+                gl.linkProgram(shaderProgram);
+
+                if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+                    alert("Could not initialise shaders");
+                }
+
+                gl.useProgram(shaderProgram);
+
+                shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+                gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+
+                shaderProgram.textureCoordAttribute = gl.getAttribLocation(shaderProgram, "aTextureCoord");
+                gl.enableVertexAttribArray(shaderProgram.textureCoordAttribute);
+                
+                shaderProgram.instancePositionAttribute = gl.getAttribLocation(shaderProgram, "aInstancePosition");
+                gl.enableVertexAttribArray(shaderProgram.instancePositionAttribute);
+
+                shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+                shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+                shaderProgram.samplerUniform = gl.getUniformLocation(shaderProgram, "uSampler");
+            }
+
+            var mvMatrix = mat4.create();
+            var mvMatrixStack = [];
+            var pMatrix = mat4.create();
+            
+            function mvPushMatrix() {
+                var copy = mat4.create();
+                mat4.set(mvMatrix, copy);
+                mvMatrixStack.push(copy);
+            }
+        
+            function mvPopMatrix() {
+                if (mvMatrixStack.length == 0) {
+                    throw "Invalid popMatrix!";
+                }
+                mvMatrix = mvMatrixStack.pop();
+            }
+        
+            function degToRad(degrees) {
+                return degrees * Math.PI / 180;
+            }
+
+            //function setMatrixUniforms() {
+            //    gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+            //    gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+            //}
+
+            var _vertAry;
+            var _texAry;
+            var _posAry;
+            var _idxAry;
+            
+            var _data = {};
+            var _xBlocks = 10;
+            var _yBlocks = 10;
+            var _zBlocks = 10;
+            
+            function initBuffers(x, y, z) {
+                _xBlocks = x;
+                _yBlocks = y;
+                _zBlocks = z;
+                
+                // make data
+                var xs = (-_xBlocks + 1) / 2;
+                var xm = xs + _xBlocks - 1;
+                var ys = (-_yBlocks + 1) / 2;
+                var ym = ys + _yBlocks - 1;
+                var zs = (-_zBlocks + 1) / 2;
+                var zm = zs + _zBlocks - 1;
+                
+                var distance = 1.5;
+                
+                makeData(xs, ys, zs, xm, ym, zm,
+                         distance, distance, distance,
+                         _data);
+
+                _vertAry = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, _vertAry);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(_data.vboV), gl.STATIC_DRAW);
+
+                _texAry = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, _texAry);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(_data.vboT), gl.STATIC_DRAW);
+                
+                _posAry = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, _posAry);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(_data.vboV2), gl.STATIC_DRAW);
+
+                _idxAry = gl.createBuffer();
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, _idxAry);
+                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(_data.indices), gl.STATIC_DRAW);
+            }
+            
+            function makeData(xs, ys, zs, xm, ym, zm,
+                              xd, yd, zd,
+                              data) {
+                let num = (xm - xs + 1) * (ym - ys + 1) * (zm - zs + 1);
+                
+                const VERT_PER_CUBE = 42;
+                const TEX_PER_CUBE = 28;
+                const POS_PER_CUBE = 3;
+                const IDX_PER_CUBE = 14;
+                
+                let size_of_float = 4;
+                let size_of_unsigned_int = 4;
+                
+                let memorySize = (VERT_PER_CUBE + TEX_PER_CUBE + POS_PER_CUBE * num) * size_of_float
+                + IDX_PER_CUBE * size_of_unsigned_int;
+                
+                document.getElementById("memory").innerText = "memory usage " + memorySize.toLocaleString() + " bytes";
+                
+                let xr = 0.5;
+                let yr = 0.5;
+                let zr = 0.5;
+                
+                let texBaseX = 1.0;
+                let texBaseY = 1.0;
+                let texUnitX = 16.0;
+                let texUnitY = 16.0;
+                let texUnitZ = 16.0;
+                
+                const TEX_SIZE = 128.0;
+                
+                texBaseX /= TEX_SIZE;
+                texBaseY /= TEX_SIZE;
+                texUnitX /= TEX_SIZE;
+                texUnitY /= TEX_SIZE;
+                texUnitZ /= TEX_SIZE;
+                
+                data.vboV = [];
+                data.vboT = [];
+                data.indices = [];
+                
+                var x = 0.0;
+                var y = 0.0;
+                var z = 0.0;
+                
+                // 0
+                data.vboV.push(x - xr);
+                data.vboV.push(y - yr);
+                data.vboV.push(z + zr);
+                data.vboT.push(texBaseX + texUnitX * 2 + texUnitY * 2);
+                data.vboT.push(texBaseY + texUnitY);
+                // 1
+                data.vboV.push(x + xr);
+                data.vboV.push(y - yr);
+                data.vboV.push(z + zr);
+                data.vboT.push(texBaseX + texUnitX * 3 + texUnitY * 2);
+                data.vboT.push(texBaseY + texUnitY);
+                // 2
+                data.vboV.push(x - xr);
+                data.vboV.push(y + yr);
+                data.vboV.push(z + zr);
+                data.vboT.push(texBaseX + texUnitX * 2 + texUnitY * 2);
+                data.vboT.push(texBaseY);
+                // 3
+                data.vboV.push(x + xr);
+                data.vboV.push(y + yr);
+                data.vboV.push(z + zr);
+                data.vboT.push(texBaseX + texUnitX * 3 + texUnitY * 2);
+                data.vboT.push(texBaseY);
+                // 4
+                data.vboV.push(x - xr);
+                data.vboV.push(y - yr);
+                data.vboV.push(z - zr);
+                data.vboT.push(texBaseX + texUnitX * 2 + texUnitY * 2);
+                data.vboT.push(texBaseY + texUnitY + texUnitZ);
+                // 5
+                data.vboV.push(x - xr);
+                data.vboV.push(y + yr);
+                data.vboV.push(z + zr);
+                data.vboT.push(texBaseX + texUnitX * 2 + texUnitY);
+                data.vboT.push(texBaseY + texUnitY);
+                // 6
+                data.vboV.push(x - xr);
+                data.vboV.push(y + yr);
+                data.vboV.push(z - zr);
+                data.vboT.push(texBaseX + texUnitX * 2 + texUnitY);
+                data.vboT.push(texBaseY + texUnitY + texUnitZ);
+                // 7
+                data.vboV.push(x + xr);
+                data.vboV.push(y + yr);
+                data.vboV.push(z + zr);
+                data.vboT.push(texBaseX + texUnitX + texUnitY);
+                data.vboT.push(texBaseY + texUnitY);
+                // 8
+                data.vboV.push(x + xr);
+                data.vboV.push(y + yr);
+                data.vboV.push(z - zr);
+                data.vboT.push(texBaseX + texUnitX + texUnitY);
+                data.vboT.push(texBaseY + texUnitY + texUnitZ);
+                // 9
+                data.vboV.push(x + xr);
+                data.vboV.push(y - yr);
+                data.vboV.push(z + zr);
+                data.vboT.push(texBaseX + texUnitX);
+                data.vboT.push(texBaseY + texUnitY);
+                // 10
+                data.vboV.push(x + xr);
+                data.vboV.push(y - yr);
+                data.vboV.push(z - zr);
+                data.vboT.push(texBaseX + texUnitX);
+                data.vboT.push(texBaseY + texUnitY + texUnitZ);
+                // 11
+                data.vboV.push(x - xr);
+                data.vboV.push(y - yr);
+                data.vboV.push(z - zr);
+                data.vboT.push(texBaseX);
+                data.vboT.push(texBaseY + texUnitY + texUnitZ);
+                // 12
+                data.vboV.push(x + xr);
+                data.vboV.push(y + yr);
+                data.vboV.push(z - zr);
+                data.vboT.push(texBaseX + texUnitX);
+                data.vboT.push(texBaseY + texUnitY * 2 + texUnitZ);
+                // 13
+                data.vboV.push(x - xr);
+                data.vboV.push(y + yr);
+                data.vboV.push(z - zr);
+                data.vboT.push(texBaseX);
+                data.vboT.push(texBaseY + texUnitY * 2 + texUnitZ);
+                
+                let count = 0;
+                
+                data.indices.push(count * (IDX_PER_CUBE - 0) + 3);
+                data.indices.push(count * (IDX_PER_CUBE - 0) + 2);
+                data.indices.push(count * (IDX_PER_CUBE - 0) + 1);
+                data.indices.push(count * (IDX_PER_CUBE - 0) + 0);
+                data.indices.push(count * (IDX_PER_CUBE - 0) + 4);
+                data.indices.push(count * (IDX_PER_CUBE - 0) + 5);
+                data.indices.push(count * (IDX_PER_CUBE - 0) + 6);
+                data.indices.push(count * (IDX_PER_CUBE - 0) + 7);
+                data.indices.push(count * (IDX_PER_CUBE - 0) + 8);
+                data.indices.push(count * (IDX_PER_CUBE - 0) + 9);
+                data.indices.push(count * (IDX_PER_CUBE - 0) + 10);
+                data.indices.push(count * (IDX_PER_CUBE - 0) + 11);
+                data.indices.push(count * (IDX_PER_CUBE - 0) + 12);
+                data.indices.push(count * (IDX_PER_CUBE - 0) + 13);
+
+                data.vboV.itemSize = 3;
+                data.vboT.itemSize = 2;
+
+                data.vboV2 = [];
+
+                for (let xp = xs * xd; xp <= xm * xd; xp += xd) {
+                    for (let yp = ys * yd; yp <= ym * yd; yp += yd) {
+                        for (let zp = zs * zd; zp <= zm * zd; zp += zd) {
+                            data.vboV2.push(xp);
+                            data.vboV2.push(yp);
+                            data.vboV2.push(zp);
+                        }
+                    }
+                }
+
+                data.vboV2.itemSize = 3;
+            }
+
+            var xRot = 0;
+            var yRot = 0;
+            var zRot = 0;
+            function drawScene() {
+                
+                gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+                mat4.identity(mvMatrix);
+
+                mat4.translate(mvMatrix, [0.0, 0.0, -3 * (_xBlocks + _yBlocks + _zBlocks) / 3.0]);
+                
+                mat4.rotate(mvMatrix, degToRad(xRot), [1, 0, 0]);
+                mat4.rotate(mvMatrix, degToRad(yRot), [0, 1, 0]);
+                //mat4.rotate(mvMatrix, degToRad(zRot), [0, 0, 1]);
+                
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, neheTexture);
+                //gl.uniform1i(shaderProgram.samplerUniform, 0);
+                
+                gl.bindBuffer(gl.ARRAY_BUFFER, _vertAry);
+                gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, _data.vboV.itemSize, gl.FLOAT, false, 0, 0);
+                
+                gl.bindBuffer(gl.ARRAY_BUFFER, _texAry);
+                gl.vertexAttribPointer(shaderProgram.textureCoordAttribute, _data.vboT.itemSize, gl.FLOAT, false, 0, 0);
+                
+                gl.bindBuffer(gl.ARRAY_BUFFER, _posAry);
+                gl.vertexAttribPointer(shaderProgram.instancePositionAttribute, _data.vboV2.itemSize, gl.FLOAT, false, 0, 0);
+                
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, _idxAry);
+                
+                gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+                //gl.drawElements(gl.TRIANGLE_STRIP, _data.indices.length, gl.UNSIGNED_INT, 0);
+                ext.drawElementsInstancedANGLE(gl.TRIANGLE_STRIP, _data.indices.length, gl.UNSIGNED_INT, 0, _xBlocks * _yBlocks * _zBlocks);
+                
+            }
+
+            function webGLStart() {
+                var canvas = document.getElementById("canvas");
+                initGL(canvas);
+                initShaders();
+                initBuffers(_xBlocks, _yBlocks, _zBlocks);
+                initTexture();
+
+                gl.clearColor(0.0, 0.5, 0.0, 1.0);
+                gl.enable(gl.DEPTH_TEST);
+
+                gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+                mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.1, 1000.0, pMatrix);
+                gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+
+                ext.vertexAttribDivisorANGLE(shaderProgram.vertexPositionAttribute, 0);
+                ext.vertexAttribDivisorANGLE(shaderProgram.textureCoordAttribute, 0);
+                ext.vertexAttribDivisorANGLE(shaderProgram.instancePositionAttribute, 1);
+                //ext.vertexAttribDivisorANGLE(shaderProgram.instancePositionAttribute, 1);
+
+                tick();
+            }
+        
+            function tick() {
+                requestAnimFrame(tick);
+                drawScene();
+                animate();
+            }
+        
+            var neheTexture;
+            function initTexture() {
+                neheTexture = gl.createTexture();
+                neheTexture.image = new Image();
+                neheTexture.image.onload = function() {
+                    handleLoadedTexture(neheTexture);
+                }
+                neheTexture.image.src = "cube180820.png";
+            }
+        
+            function handleLoadedTexture(texture) {
+                gl.bindTexture(gl.TEXTURE_2D, texture);
+                //gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texture.image);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                gl.bindTexture(gl.TEXTURE_2D, null);
+            }
+        
+            var lastTime = 0;
+            function animate() {
+                var timeNow = new Date().getTime();
+                if (lastTime != 0) {
+                    var elapsed = timeNow - lastTime;
+                    
+                    xRot += (36 * elapsed) / 1000.0;
+                    yRot += (18 * elapsed) / 1000.0;
+                    //zRot += (10 * elapsed) / 1000.0;
+                    
+                    if (updateForFps(elapsed)) {
+                        document.getElementById("fps").innerText = getFpsInfo();
+                    }
+                }
+                lastTime = timeNow;
+            }
+        
+            var _timeTotal = 0.0;
+            var _time1Sec = 0.0;
+            var _time3Sec = 0.0;
+            var _frameCntTotal = 0;
+            var _frameCnt1Sec = 0;
+            var _frameCnt3Sec = 0;
+            
+            var _preFpsIn1Sec = 0.0;
+            var _preFpsIn3Sec = 0.0;
+            
+            function updateForFps(time) {
+                var bUpdate = false;
+                
+                _timeTotal += time;
+                _time1Sec += time;
+                _time3Sec += time;
+                
+                _frameCntTotal++;
+                _frameCnt1Sec++;
+                _frameCnt3Sec++;
+                
+                if (1000.0 <= _time1Sec) {
+                    _preFpsIn1Sec = _frameCnt1Sec / _time1Sec ;
+                    _time1Sec = 0;
+                    _frameCnt1Sec = 0;
+                    bUpdate = true;
+                }
+                if (3000.0 <= _time3Sec) {
+                    _preFpsIn3Sec = _frameCnt3Sec / _time3Sec ;
+                    _time3Sec = 0;
+                    _frameCnt3Sec = 0;
+                    bUpdate = true;
+                }
+                
+                return bUpdate;
+            }
+        
+            function getFpsInfo() {
+                return adjustFps(_preFpsIn1Sec) + "(1s) "
+                + adjustFps(_preFpsIn3Sec) + "(3s) "
+                + adjustFps(_frameCntTotal / _timeTotal) + "(total)";
+            }
+        
+            function adjustFps(value) {
+                return (value * 1000).toFixed(2);
+            }
+        
+            function changeBlocks() {
+                let newX = parseInt(document.getElementById("blocksX").value);
+                let newY = parseInt(document.getElementById("blocksY").value);
+                let newZ = parseInt(document.getElementById("blocksZ").value);
+                if (isNaN(newX)) { newX = 10; }
+                if (newX < 1) { newX = 1; }
+                if (200 < newX) { newX = 200; }
+                if (isNaN(newY)) { newY = 10; }
+                if (newY < 1) { newY = 1; }
+                if (200 < newY) { newY = 200; }
+                if (isNaN(newZ)) { newZ = 10; }
+                if (newZ < 1) { newZ = 1; }
+                if (200 < newZ) { newZ = 200; }
+                document.getElementById("blocksX").value = newX.toString();
+                document.getElementById("blocksY").value = newY.toString();
+                document.getElementById("blocksZ").value = newZ.toString();
+                
+                if (_xBlocks != newX || _yBlocks != newY || _zBlocks != newZ) {
+                    initBuffers(newX, newY, newZ);
+                    
+                    _timeTotal = 0.0;
+                    _time1Sec = 0.0;
+                    _time3Sec = 0.0;
+                    _frameCntTotal = 0;
+                    _frameCnt1Sec = 0;
+                    _frameCnt3Sec = 0;
+
+                    _preFpsIn1Sec = 0.0;
+                    _preFpsIn3Sec = 0.0;
+                }
+            }
+
+        </script>
+        
+        <style type="text/css">
+            #fps {
+                position:absolute;
+                top:10px;
+                left:20px;
+                font-size:2em;
+                color: white;
+                font-family: Baoli SC;
+            }
+            #memory {
+                position:absolute;
+                top:655px;
+                left:20px;
+                font-size:2em;
+                color: white;
+                font-family: Baoli SC;
+            }
+        </style>
+    </head>
+<body onload="webGLStart();">
+    <canvas id="canvas" style="border: none;" width="1280" height="700"></canvas>
+    <div id="fps">00.0(1s) 00.0(3s) 00.0(total)</div>
+    <div id="memory"></div>
+    <br />
+    <table style="border: 0; padding: 10px;">
+        <tr>
+            <td>X: <input type="text" id="blocksX" value="10" />
+            <td>Y: <input type="text" id="blocksY" value="10" />
+            <td>Z: <input type="text" id="blocksZ" value="10" />
+            <td>Z: <input type="button" id="apply" value="apply" onclick="changeBlocks();" />(1 - 200)
+    </table>
+</body>
+</html>
